@@ -1,0 +1,6 @@
+{
+  "name": "HumanTone",
+  "description": "Améliorez vos textes avec HumanTone : reformulation naturelle, fluide et humaine selon votre style d'écriture.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
