@@ -1,0 +1,133 @@
+
+interface Env {
+  ASSETS: { fetch(request: Request): Promise<Response> };
+  GEMINI_API_KEY?: string;
+}
+
+function json(data: unknown, status = 200): Response {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { "Content-Type": "application/json; charset=utf-8" },
+  });
+}
+
+function demoRewrite(text: string): string {
+  return text
+    .replace(/\bDe plus,\s*/gi, "Aussi, ")
+    .replace(/\bEn outre,\s*/gi, "Et ")
+    .replace(/\bIl est important de noter que\s*/gi, "")
+    .replace(/\bafin de\b/gi, "pour")
+    .replace(/\bpar conséquent\b/gi, "donc")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    const url = new URL(request.url);
+
+    if (url.pathname === "/api/status" && request.method === "GET") {
+      return json({
+        ok: true,
+        configured: Boolean(env.GEMINI_API_KEY),
+        model: "gemini-2.5-flash",
+      });
+    }
+
+    if (url.pathname === "/api/rewrite" && request.method === "POST") {
+      let body: { text?: string; allowDemo?: boolean };
+
+      try {
+        body = await request.json();
+      } catch {
+        return json({ success: false, error: "Requête invalide." }, 400);
+      }
+
+      const text = typeof body.text === "string" ? body.text.trim() : "";
+
+      if (!text) {
+        return json({ success: false, error: "Ajoute un texte à réécrire." }, 400);
+      }
+
+      if (text.length > 12000) {
+        return json({
+          success: false,
+          error: "Le texte est trop long (maximum 12 000 caractères).",
+        }, 400);
+      }
+
+      if (!env.GEMINI_API_KEY) {
+        if (body.allowDemo) {
+          return json({ success: true, result: demoRewrite(text), demo: true });
+        }
+
+        return json({
+          success: false,
+          error: "La clé API n'est pas configurée sur le serveur.",
+        }, 503);
+      }
+
+      try {
+        const response = await fetch(
+          "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-goog-api-key": env.GEMINI_API_KEY,
+            },
+            body: JSON.stringify({
+              systemInstruction: {
+                parts: [{
+                  text: "Tu es HumanTone, un assistant de réécriture. Réécris le texte fourni en français naturel et fluide, en conservant son sens, ses faits et son intention. N'ajoute aucune information. Retourne uniquement le texte réécrit."
+                }]
+              },
+              contents: [{
+                parts: [{ text }]
+              }],
+              generationConfig: {
+                temperature: 0.7,
+                maxOutputTokens: 4096
+              }
+            })
+          }
+        );
+
+        const data = await response.json() as {
+          candidates?: Array<{
+            content?: { parts?: Array<{ text?: string }> };
+          }>;
+          error?: { message?: string };
+        };
+
+        if (!response.ok) {
+          return json({
+            success: false,
+            error: data.error?.message || "Le service de réécriture a rencontré une erreur."
+          }, 502);
+        }
+
+        const result = data.candidates?.[0]?.content?.parts
+          ?.map(part => part.text || "")
+          .join("")
+          .trim();
+
+        if (!result) {
+          return json({
+            success: false,
+            error: "Aucun texte réécrit n'a été retourné."
+          }, 502);
+        }
+
+        return json({ success: true, result });
+      } catch {
+        return json({
+          success: false,
+          error: "Impossible de contacter le service de réécriture."
+        }, 502);
+      }
+    }
+
+    return env.ASSETS.fetch(request);
+  },
+};
